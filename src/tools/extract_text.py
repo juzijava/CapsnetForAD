@@ -2,16 +2,24 @@ import os
 import glob
 import torch
 from src.tools.extract import extract_dataset, LogmelExtractor, load_features
-from src.config.config import DATA_CONFIG, DEVICE_CONFIG  # 导入配置
 
 
-def extract_audio_features_optimized(audio_dir=None, output_file=None, duration=None):
-    """优化版的特征提取，避免重复文件"""
+def extract_audio_features_optimized(audio_dir=None, output_file=None, duration=None,
+                                     sample_rate=16000, n_window=1024, hop_length=512,
+                                     n_mels=64, recompute=True):
+    """
+    提取音频特征的优化版本
 
-    # 使用配置参数，如果传参则覆盖配置
-    audio_dir = audio_dir or DATA_CONFIG['audio_dir']
-    output_file = output_file or DATA_CONFIG['output_file']
-    duration = duration or DATA_CONFIG['feature_extraction']['duration']
+    参数:
+    audio_dir: 音频文件目录
+    output_file: 输出特征文件路径
+    duration: 音频剪辑时长(秒)
+    sample_rate: 采样率
+    n_window: 窗口大小
+    hop_length: 跳数长度
+    n_mels: Mel滤波器数量
+    recompute: 是否重新计算特征
+    """
 
     print(f"搜索目录: {audio_dir}")
 
@@ -52,16 +60,16 @@ def extract_audio_features_optimized(audio_dir=None, output_file=None, duration=
         file_size = os.path.getsize(full_path) / 1024  # KB
         print(f"  {i + 1}. {name} ({file_size:.1f} KB)")
 
-    # 创建特征提取器（使用配置参数）
-    extractor_config = DATA_CONFIG['feature_extraction']
+    # 创建特征提取器
     extractor = LogmelExtractor(
-        sample_rate=extractor_config['sample_rate'],
-        n_window=extractor_config['n_window'],
-        hop_length=extractor_config['hop_length'],
-        n_mels=extractor_config['n_mels']
+        sample_rate=sample_rate,
+        n_window=n_window,
+        hop_length=hop_length,
+        n_mels=n_mels
     )
 
-    print(f"开始提取特征，预计时间帧数: {extractor.output_shape(duration)[0]}")
+    print(f"开始提取特征，预计时间帧数: {extractor.output_shape(duration)[0] if duration else '未知'}")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # 提取特征
     extract_dataset(
@@ -70,9 +78,9 @@ def extract_audio_features_optimized(audio_dir=None, output_file=None, duration=
         extractor=extractor,
         clip_duration=duration,
         output_path=output_file,
-        recompute=extractor_config['recompute'],
+        recompute=recompute,
         n_transforms_iter=None,
-        device=DEVICE_CONFIG['device']
+        device=device
     )
 
     # 验证结果
@@ -85,5 +93,13 @@ def extract_audio_features_optimized(audio_dir=None, output_file=None, duration=
 
 
 if __name__ == "__main__":
-    # 直接使用配置文件中的参数
-    features = extract_audio_features_optimized()
+    # 示例用法 - 根据需要修改这些参数
+    audio_directory = "D:/tools/Pycode/CapsnetForAD/data/test/ToyRCCar"# 修改为你的音频目录
+    output_path = "D:/tools/Pycode/CapsnetForAD/workresult/testfeatures.h5"  # 修改为输出文件路径
+    clip_duration = 10  # 音频时长(秒)，None表示使用完整音频
+
+    features = extract_audio_features_optimized(
+        audio_dir=audio_directory,
+        output_file=output_path,
+        duration=clip_duration
+    )

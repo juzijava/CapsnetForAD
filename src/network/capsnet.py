@@ -247,20 +247,3 @@ def create_gccaps(input_shape: Tuple[int, int], n_classes: int) -> GCCaps:
         GCCaps model instance
     """
     return GCCaps(input_shape=input_shape, n_classes=n_classes)
-
-
-# 测试代码
-if __name__ == "__main__":
-    # 测试模型
-    input_shape = (100, 64)  # 100个时间步，64个频率bin
-    n_classes = 10
-
-    model = create_gccaps(input_shape, n_classes)
-    print(f"Model created with {sum(p.numel() for p in model.parameters())} parameters")
-
-    # 测试前向传播
-    batch_size = 4
-    x_test = torch.randn(batch_size, *input_shape)
-    output = model(x_test)
-    print(f"Input shape: {x_test.shape}")
-    print(f"Output shape: {output.shape}")

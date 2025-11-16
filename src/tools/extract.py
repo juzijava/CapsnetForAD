@@ -9,9 +9,7 @@ import torch.nn as nn
 import torchaudio
 from tqdm import tqdm
 
-import data_augmentation as aug
-from src.tools import utils
-
+from src.tools import utils, data_augmentation as aug
 
 
 def extract_dataset(dataset_path,

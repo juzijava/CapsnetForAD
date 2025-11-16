@@ -17,6 +17,33 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.network.capsnet import GCCaps, create_gccaps
 
 
+class AnomalyDetectionModel(nn.Module):
+    """修改为异常检测的模型"""
+
+    def __init__(self, input_shape, n_classes=2):
+        super().__init__()
+        # 使用你现有的CapsNet架构
+        self.capsnet = create_gccaps(input_shape=input_shape, n_classes=n_classes)
+
+        # 添加异常分数输出层
+        self.anomaly_scorer = nn.Sequential(
+            nn.Linear(n_classes, 64),
+            nn.ReLU(),
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+            nn.Sigmoid()  # 输出0-1的异常分数
+        )
+
+    def forward(self, x):
+        # 获取CapsNet的特征
+        features = self.capsnet(x)
+
+        # 计算异常分数
+        anomaly_score = self.anomaly_scorer(features)
+
+        return anomaly_score.squeeze()
+
 class H5AudioDataset(Dataset):
     """从HDF5文件加载音频特征的Dataset"""
 
@@ -35,17 +62,22 @@ class H5AudioDataset(Dataset):
         # 转换为PyTorch张量
         feature = torch.FloatTensor(feature)
 
-        # 处理标签格式
-        if isinstance(label, (int, np.integer)):
-            label = torch.LongTensor([label])
-        else:
+        # 修复标签处理
+        if isinstance(label, (int, np.integer, np.float32, np.float64)):
+            # 单个数值，直接转换为标量张量
+            label = torch.tensor(label, dtype=torch.float32)
+        elif isinstance(label, (list, np.ndarray)):
+            # 数组类型
             label = torch.FloatTensor(label)
+        else:
+            # 其他情况
+            label = torch.tensor(label, dtype=torch.float32)
 
         # 数据增强
         if self.transform:
             feature = self.transform(feature)
 
-        return feature, label.squeeze()
+        return feature, label
 
 
 def load_labels_from_csv(csv_path, filename_col='file_name', label_col='label'):
@@ -251,33 +283,31 @@ def prepare_data(h5_path, csv_path, test_size=0.2, random_state=42, use_simple_m
     return X_train, X_test, y_train, y_test
 
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device):
-    """训练模型"""
+def train_anomaly_model(model, train_loader, val_loader, criterion, optimizer, num_epochs, device):
+    """训练异常检测模型"""
 
     train_losses = []
     val_losses = []
-    train_accuracies = []
-    val_accuracies = []
-
-    best_val_acc = 0.0
+    best_val_loss = float('inf')
     best_model_state = None
 
     for epoch in range(num_epochs):
         # 训练阶段
         model.train()
         running_loss = 0.0
-        correct = 0
-        total = 0
 
         for batch_idx, (data, target) in enumerate(train_loader):
             data, target = data.to(device), target.to(device)
 
+            # 将标签转换为异常分数格式：正常=0, 异常=1
+            anomaly_target = target.float()
+
             # 前向传播
             optimizer.zero_grad()
-            output = model(data)
+            anomaly_scores = model(data)
 
             # 计算损失
-            loss = criterion(output, target)
+            loss = criterion(anomaly_scores, anomaly_target)
 
             # 反向传播
             loss.backward()
@@ -285,51 +315,40 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
 
             # 统计
             running_loss += loss.item()
-            _, predicted = output.max(1)
-            total += target.size(0)
-            correct += predicted.eq(target).sum().item()
 
             if batch_idx % 20 == 0:
                 print(f'Epoch: {epoch + 1}/{num_epochs} | '
                       f'Batch: {batch_idx}/{len(train_loader)} | '
                       f'Loss: {loss.item():.4f}')
 
-        # 计算训练准确率
+        # 计算训练损失
         train_loss = running_loss / len(train_loader)
-        train_accuracy = 100. * correct / total
         train_losses.append(train_loss)
-        train_accuracies.append(train_accuracy)
 
         # 验证阶段
         model.eval()
         val_loss = 0.0
-        correct = 0
-        total = 0
 
         with torch.no_grad():
             for data, target in val_loader:
                 data, target = data.to(device), target.to(device)
-                output = model(data)
-                loss = criterion(output, target)
+                anomaly_target = target.float()
 
+                anomaly_scores = model(data)
+                loss = criterion(anomaly_scores, anomaly_target)
                 val_loss += loss.item()
-                _, predicted = output.max(1)
-                total += target.size(0)
-                correct += predicted.eq(target).sum().item()
 
         val_loss = val_loss / len(val_loader)
-        val_accuracy = 100. * correct / total
         val_losses.append(val_loss)
-        val_accuracies.append(val_accuracy)
 
-        # 保存最佳模型
-        if val_accuracy > best_val_acc:
-            best_val_acc = val_accuracy
+        # 保存最佳模型（基于验证损失）
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             best_model_state = model.state_dict().copy()
 
         print(f'Epoch: {epoch + 1}/{num_epochs} | '
-              f'Train Loss: {train_loss:.4f} | Train Acc: {train_accuracy:.2f}% | '
-              f'Val Loss: {val_loss:.4f} | Val Acc: {val_accuracy:.2f}%')
+              f'Train Loss: {train_loss:.4f} | '
+              f'Val Loss: {val_loss:.4f}')
 
     # 加载最佳模型
     model.load_state_dict(best_model_state)
@@ -337,11 +356,45 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
     return {
         'train_losses': train_losses,
         'val_losses': val_losses,
-        'train_accuracies': train_accuracies,
-        'val_accuracies': val_accuracies,
-        'best_val_acc': best_val_acc
+        'best_val_loss': best_val_loss
     }
 
+
+def generate_anomaly_scores(model, data_loader, device):
+    """生成异常分数"""
+    model.eval()
+    anomaly_scores = []
+
+    with torch.no_grad():
+        for data, _ in data_loader:
+            data = data.to(device)
+            scores = model(data)
+            anomaly_scores.extend(scores.cpu().numpy())
+
+    return anomaly_scores
+
+
+def save_anomaly_scores(anomaly_scores, output_dir):
+    """保存异常分数到文件"""
+    # 创建示例文件名（根据实际数据调整）
+    filenames = [f"test_{i:03d}.wav" for i in range(len(anomaly_scores))]
+
+    # 保存异常分数CSV
+    df_anomaly = pd.DataFrame({
+        'filename': filenames,
+        'anomaly_score': anomaly_scores
+    })
+    df_anomaly.to_csv(os.path.join(output_dir, 'anomaly_scores.csv'), index=False)
+
+    # 保存决策结果CSV（基于阈值0.5）
+    df_decision = pd.DataFrame({
+        'filename': filenames,
+        'prediction': (np.array(anomaly_scores) > 0.5).astype(int)
+    })
+    df_decision.to_csv(os.path.join(output_dir, 'decision_results.csv'), index=False)
+
+    print(f"异常分数已保存到 {output_dir}")
+    print(f"异常分数范围: {min(anomaly_scores):.4f} - {max(anomaly_scores):.4f}")
 
 def main():
     # 配置参数
@@ -376,16 +429,18 @@ def main():
     print("准备数据...")
     X_train, X_test, y_train, y_test = prepare_data(h5_path, csv_path, use_simple_match=True)
 
-    # 确保标签从0开始
-    y_train = y_train - 1  # 将1,2转换为0,1
-    y_test = y_test - 1  # 将1,2转换为0,1
+    # 修改标签：将分类标签转换为异常检测标签
+    # 假设正常样本标签为1，异常样本标签为2
+    # 转换为：正常=0，异常=1
+    print("转换标签格式...")
+    y_train = (y_train - 1).astype(float)  # 1->0.0(正常), 2->1.0(异常)
+    y_test = (y_test - 1).astype(float)  # 1->0.0(正常), 2->1.0(异常)
 
-    print("修正后的标签分布:")
+    print("转换后的标签分布:")
     unique_train, counts_train = np.unique(y_train, return_counts=True)
     unique_test, counts_test = np.unique(y_test, return_counts=True)
-    print(f"训练集 - 类别 {unique_train}: {counts_train}")
-    print(f"测试集 - 类别 {unique_test}: {counts_test}")
-
+    print(f"训练集 - 正常: {counts_train[0]}, 异常: {counts_train[1]}")
+    print(f"测试集 - 正常: {counts_test[0]}, 异常: {counts_test[1]}")
     # 创建数据集
     train_dataset = H5AudioDataset(X_train, y_train)
     test_dataset = H5AudioDataset(X_test, y_test)
@@ -395,24 +450,34 @@ def main():
     val_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     # 创建模型
-    print("创建模型...")
-    model = create_gccaps(input_shape=input_shape, n_classes=2)
+    print("创建异常检测模型...")
+    model = AnomalyDetectionModel(input_shape=input_shape, n_classes=2)
     model = model.to(device)
 
-    # 打印模型信息
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"总参数: {total_params:,}")
-    print(f"可训练参数: {trainable_params:,}")
+    # 使用加权MSELoss
+    class WeightedMSELoss(nn.Module):
+        def __init__(self, weight_normal=1.0, weight_anomaly=100.0):
+            super().__init__()
+            self.weight_normal = weight_normal
+            self.weight_anomaly = weight_anomaly
 
-    # 定义损失函数和优化器
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+        def forward(self, pred, target):
+            # 为异常样本分配更高权重
+            weights = torch.where(target == 1,
+                                  torch.tensor(self.weight_anomaly).to(pred.device),
+                                  torch.tensor(self.weight_normal).to(pred.device))
+            loss = (pred - target) ** 2
+            weighted_loss = loss * weights
+            return weighted_loss.mean()
+
+    # 使用高权重处理类别不平衡
+    criterion = WeightedMSELoss(weight_normal=1.0, weight_anomaly=500.0)  # 异常样本权重500倍
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
 
-    # 训练模型
-    print("开始训练...")
-    history = train_model(
+    # 修改训练函数调用
+    print("开始训练异常检测模型...")
+    history = train_anomaly_model(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -422,28 +487,87 @@ def main():
         device=device
     )
 
-    # 保存模型和训练历史
+    # 保存模型
     checkpoint = {
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
         'history': history,
         'input_shape': input_shape,
-        'num_classes': 2,
-        'best_val_acc': history['best_val_acc']
+        'best_val_loss': history['best_val_loss']
     }
 
-    torch.save(checkpoint, '../../workresult/gccaps_model.pth')
+    torch.save(checkpoint, '../../workresult/gccaps_anomaly_model.pth')
 
-    # 保存训练历史为JSON
-    with open('../../workresult/training_history.json', 'w') as f:
-        json.dump(history, f, indent=2)
+    print(f"训练完成！最佳验证损失: {history['best_val_loss']:.4f}")
+    print("异常检测模型已保存为 'gccaps_anomaly_model.pth'")
 
-    print(f"训练完成！最佳验证准确率: {history['best_val_acc']:.2f}%")
-    print("模型已保存为 'gccaps_model.pth'")
-    print("训练历史已保存为 'training_history.json'")
+    # 新增：生成测试集的异常分数
+    # 生成测试集的异常分数
+    print("生成测试集异常分数...")
+    test_anomaly_scores = generate_anomaly_scores(model, train_loader, device)
 
-    return model, history
+    # 保存异常分数
+    save_anomaly_scores(test_anomaly_scores, '../../workresult/')
+
+    # 在main函数内部分析模型性能
+    print("\n分析模型性能...")
+    analyze_model_performance(model, train_loader, device)
+
+    return model, history, test_anomaly_scores
+
+
+def analyze_model_performance(model, data_loader, device):
+    """分析模型性能"""
+    model.eval()
+    normal_scores = []
+    anomaly_scores = []
+
+    with torch.no_grad():
+        for data, target in data_loader:
+            data, target = data.to(device), target.to(device)
+            scores = model(data)
+
+            # 分离正常和异常样本的分数
+            normal_mask = (target == 0)
+            anomaly_mask = (target == 1)
+
+            if normal_mask.any():
+                normal_scores.extend(scores[normal_mask].cpu().numpy())
+            if anomaly_mask.any():
+                anomaly_scores.extend(scores[anomaly_mask].cpu().numpy())
+
+    print("\n" + "=" * 50)
+    print("模型性能详细分析:")
+    print("=" * 50)
+
+    if normal_scores:
+        print(f"正常样本 ({len(normal_scores)}个):")
+        print(f"  分数范围: {np.min(normal_scores):.4f} - {np.max(normal_scores):.4f}")
+        print(f"  平均值: {np.mean(normal_scores):.4f}")
+        print(f"  标准差: {np.std(normal_scores):.4f}")
+
+    if anomaly_scores:
+        print(f"异常样本 ({len(anomaly_scores)}个):")
+        print(f"  分数范围: {np.min(anomaly_scores):.4f} - {np.max(anomaly_scores):.4f}")
+        print(f"  平均值: {np.mean(anomaly_scores):.4f}")
+        print(f"  标准差: {np.std(anomaly_scores):.4f}")
+
+    if normal_scores and anomaly_scores:
+        separation = np.mean(anomaly_scores) - np.mean(normal_scores)
+        print(f"\n分离度分析:")
+        print(f"  均值差异: {separation:.4f}")
+        print(f"  分离效果: {'好' if separation > 0.1 else '一般' if separation > 0.05 else '差'}")
+
+        # 计算AUC（如果可能）
+        from sklearn.metrics import roc_auc_score
+        try:
+            all_scores = normal_scores + anomaly_scores
+            all_labels = [0] * len(normal_scores) + [1] * len(anomaly_scores)
+            auc = roc_auc_score(all_labels, all_scores)
+            print(f"  AUC: {auc:.4f}")
+        except:
+            print("  AUC: 无法计算（可能需要更多样本）")
 
 
 if __name__ == "__main__":
-    model, history = main()
+    model, history, test_anomaly_scores = main()
