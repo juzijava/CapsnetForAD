@@ -1,0 +1,21 @@
+name: dcase2025
+channels:
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
+  - https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.11
+  - cudatoolkit=11.8
+  - libsndfile=1.2.2
+  - numpy=2.3.3
+  - pyyaml=6.0.2
+  - scipy=1.16.2
+  - matplotlib=3.10.7
+  - seaborn=0.13.2
+  - tqdm=4.67.1
+  - fasteners=0.19
+  - jupyter=1.1.1
+  - tokenizers=0.22.2
+prefix: D:\tools\Anaconda\envs\dcase2025
